@@ -8,8 +8,16 @@
 #include <mutex>
 #include <map>
 
+#include <filesystem>
+
 #include "vec.h"
 #include "LogPrint.h"
+
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
+
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb_image_write.h"
 
 std::mutex gMutex;
 
@@ -29,11 +37,26 @@ struct Face
 
 struct OBJMaterialInfo
 {
+    uint32_t            miID;
     float4              mDiffuse;
     float4              mSpecular;
     float4              mEmissive;
     std::string         mName;
-    std::string         mTexturePath;
+    std::string         mAlbedoTexturePath;
+    std::string         mNormalTexturePath;
+    std::string         mSpecularTexturePath;
+    std::string         mEmissiveTexturePath;
+};
+
+struct OutputMaterialInfo
+{
+    float4              mDiffuse;
+    float4              mSpecular;
+    float4              mEmissive;
+    uint32_t            miID;
+    uint32_t            miAlbedoTextureID;
+    uint32_t            miNormalTextureID;
+    uint32_t            miSpecularTextureID;
 };
 
 struct MeshRange
@@ -45,14 +68,15 @@ struct MeshRange
 struct Vertex
 {
     vec4        mPosition;
+    vec4        mUV;
     vec4        mNormal;
-    vec2        mUV;
 };
+
 
 struct MeshExtent
 {
-    vec3            mMinPosition;
-    vec3            mMaxPosition;
+    vec4            mMinPosition;
+    vec4            mMaxPosition;
 };
 
 
@@ -64,17 +88,8 @@ void loadOBJ(
     std::vector<std::vector<std::vector<uint32_t>>>& aaiFaceNormalIndices,
     std::vector<std::vector<std::vector<uint32_t>>>& aaiFaceUVIndices,
     std::vector<OBJMaterialInfo>& aMaterials,
+    std::vector<uint32_t>& aiMeshMaterialID,
     char const* szFilePath);
-
-void outputCoordinates(
-    std::vector<std::vector<vec3>> const& aaPositions,
-    std::vector<std::vector<vec3>> const& aaNormals,
-    std::vector<std::vector<vec2>> const& aaUVs,
-    std::vector<std::vector<std::vector<uint32_t>>> const& aaiFacePositionIndices,
-    std::vector<std::vector<std::vector<uint32_t>>> const& aaiFaceNormalIndices,
-    std::vector<std::vector<std::vector<uint32_t>>> const& aaiFaceUVIndices,
-    std::string const& directory,
-    std::string const& baseName);
 
 void makeVertices(
     std::vector<Vertex>& aTotalVertices,
@@ -107,8 +122,65 @@ void saveOBJ(
     std::vector<std::vector<uint32_t>> const& aaiTriangleVertexIndices,
     std::vector<uint32_t> const& aiMeshes);
 
-int main()
+void readMaterialFile(
+    std::vector<OBJMaterialInfo>& aMaterials,
+    std::string const& fullPath,
+    std::string const& directory,
+    std::string const& baseName);
+
+void outputMeshMaterialIDs(
+    std::vector<uint32_t> const& aiMeshMaterialIDs,
+    std::string const& directory,
+    std::string const& baseName);
+
+int main(int argc, char* argv[])
 {
+    {
+        FILE* fp = fopen("d:\\downloads\\screen-shots\\bistro-irradiance-cache.bin", "rb");
+        for(uint32_t i = 0; i < 5000; i++)
+        {
+            float4 position;
+            fread(&position, sizeof(float4), 1, fp);
+            if(length(float3(position.x, position.y, position.z)) <= 0.0f)
+            {
+                continue;
+            }
+            
+            std::vector<float4> aImageData(64);
+            fread(aImageData.data(), sizeof(float4), 64, fp);
+
+            std::vector<unsigned char> acConvertedImageData(64 * 4);
+            uint32_t iCount = 0;
+            for(uint32_t j = 0; j < 64; j++)
+            {
+                if(aImageData[j].x > 0.0f || aImageData[j].y > 0.0f || aImageData[j].z > 0.0f)
+                {
+                    ++iCount;
+                }
+
+                unsigned char cRed = (unsigned char)((aImageData[j].x) * 255.0f);
+                unsigned char cGreen = (unsigned char)((aImageData[j].y) * 255.0f);
+                unsigned char cBlue = (unsigned char)((aImageData[j].z) * 255.0f);
+                unsigned char cAlpha = (unsigned char)((aImageData[j].w) * 255.0f);
+
+                acConvertedImageData[j * 4] = cRed;
+                acConvertedImageData[j * 4 + 1] = cGreen;
+                acConvertedImageData[j * 4 + 2] = cBlue;
+                acConvertedImageData[j * 4 + 3] = cAlpha;
+            }
+
+            if(iCount > 0)
+            {
+                char szFileOutputPath[256];
+                sprintf(szFileOutputPath, "d:\\Downloads\\screen-shots\\image-probes\\probe-%d.jpg", i);
+                stbi_write_jpg(szFileOutputPath, 8, 8, 4, acConvertedImageData.data(), 0);
+            }
+        }
+    
+        fclose(fp);
+    }
+
+
     std::vector<std::vector<vec3>> aaPositions;
     std::vector<std::vector<vec3>> aaNormals;
     std::vector<std::vector<vec2>> aaUVs;
@@ -118,14 +190,22 @@ int main()
     std::vector<std::vector<std::vector<uint32_t>>> aaiFaceUVIndices;
 
     std::vector<OBJMaterialInfo> aMaterials;
+    std::vector<uint32_t> aiMeshMaterialIDs;
 
-    std::string fullPath = "d:\\Downloads\\Bistro_v4\\bistro.obj";
+    std::string fullPath = argv[1]; // "d:\\Downloads\\Bistro_v4\\bistro.obj";
     auto iter = fullPath.rfind("\\");
     std::string directory = fullPath.substr(0, iter);
     std::string fileName = fullPath.substr(iter + 1);
 
     auto extensionIter = fileName.rfind(".obj");
     std::string baseName = fileName.substr(0, extensionIter);
+
+    readMaterialFile(
+        aMaterials,
+        directory + "//" + baseName + ".mtl",
+        directory,
+        baseName
+    );
 
     loadOBJ(
         aaPositions,
@@ -135,6 +215,7 @@ int main()
         aaiFaceNormalIndices,
         aaiFaceUVIndices,
         aMaterials,
+        aiMeshMaterialIDs,
         fullPath.c_str());
 
     // one big list for positions, normals, and uvs
@@ -175,6 +256,12 @@ int main()
         directory,
         baseName);
 
+    outputMeshMaterialIDs(
+        aiMeshMaterialIDs,
+        directory,
+        baseName);
+
+    std::string loadFullPath = directory + "\\" + baseName + "-triangles.bin";
     std::vector<Vertex> aTestTotalVertices;
     std::vector<std::vector<uint32_t>> aaiTriangleIndices;
     std::vector<MeshRange> aMeshRanges;
@@ -184,7 +271,21 @@ int main()
         aaiTriangleIndices,
         aMeshRanges,
         aTestMeshExtents,
-        "d:\\Downloads\\Bistro_v4\\bistro-triangles.bin");
+        loadFullPath);
+}
+
+/*
+**
+*/
+void outputMeshMaterialIDs(
+    std::vector<uint32_t> const& aiMeshMaterialIDs,
+    std::string const& directory,
+    std::string const& baseName)
+{
+    std::string fullPath = directory + "\\" + baseName + ".mid";
+    FILE* fp = fopen(fullPath.c_str(), "wb");
+    fwrite(aiMeshMaterialIDs.data(), sizeof(uint32_t), aiMeshMaterialIDs.size(), fp);
+    fclose(fp);
 }
 
 /*
@@ -213,7 +314,7 @@ void getPositionRange(
     std::vector<uint32_t>& ret,
     std::vector<std::vector<vec3>> const& aaPositions)
 {
-    uint32_t iPositionLength = aaPositions.size();
+    uint32_t iPositionLength = (uint32_t)aaPositions.size();
     ret.resize(2);
     ret[0] = ret[1] = 0;
 
@@ -241,6 +342,7 @@ void loadOBJ(
     std::vector<std::vector<std::vector<uint32_t>>>& aaiFaceNormalIndices,
     std::vector<std::vector<std::vector<uint32_t>>>& aaiFaceUVIndices,
     std::vector<OBJMaterialInfo>& aMaterials,
+    std::vector<uint32_t>& aiMeshMaterialID,
     char const* szFilePath)
 {
     aaPositions.resize(0);
@@ -249,7 +351,6 @@ void loadOBJ(
     aaiFacePositionIndices.resize(0);
     aaiFaceNormalIndices.resize(0);
     aaiFaceUVIndices.resize(0);
-    aMaterials.resize(0);
 
     std::string filePath(szFilePath);
     auto lastFowardSlash = filePath.find_last_of("/");
@@ -288,7 +389,7 @@ void loadOBJ(
     for(;;)
     {
         int64_t iEnd = fileContent.find('\n', (uint32_t)iCurrPosition);
-        if(iEnd < 0 || iEnd > fileContent.size() || iCurrPosition >= fileContent.size())
+        if(iEnd < 0 || iEnd > (int64_t)fileContent.size() || iCurrPosition >= (int64_t)fileContent.size())
         {
             break;
         }
@@ -323,7 +424,7 @@ void loadOBJ(
         if(aTokens[0] == "v")
         {
             // position
-            if(aaPositions.size() <= iCurrMeshIndex)
+            while(aaPositions.size() <= iCurrMeshIndex)
             {
                 aaPositions.resize(aaPositions.size() + 1);
             }
@@ -343,7 +444,7 @@ void loadOBJ(
         else if(aTokens[0] == "vn")
         {
             // normal
-            if(aaNormals.size() <= iCurrMeshIndex)
+            while(aaNormals.size() <= iCurrMeshIndex)
             {
                 aaNormals.resize(aaNormals.size() + 1);
             }
@@ -363,7 +464,7 @@ void loadOBJ(
         else if(aTokens[0] == "vt")
         {
             // uv
-            if(aaUVs.size() <= iCurrMeshIndex)
+            while(aaUVs.size() <= iCurrMeshIndex)
             {
                 aaUVs.resize(aaUVs.size() + 1);
             }
@@ -383,17 +484,17 @@ void loadOBJ(
         {
             // face
             // use the material mesh index instead of just mesh index due to separating out different materials on the same mesh
-            if(aaiFacePositionIndices.size() <= iCurrTotalMaterialMeshIndex)
+            while(aaiFacePositionIndices.size() <= iCurrTotalMaterialMeshIndex)
             {
                 aaiFacePositionIndices.resize(aaiFacePositionIndices.size() + 1);
                 assert(aaiFacePositionIndices.size() > iCurrTotalMaterialMeshIndex);
             }
-            if(aaiFaceNormalIndices.size() <= iCurrTotalMaterialMeshIndex)
+            while(aaiFaceNormalIndices.size() <= iCurrTotalMaterialMeshIndex)
             {
                 aaiFaceNormalIndices.resize(aaiFaceNormalIndices.size() + 1);
                 assert(aaiFaceNormalIndices.size() > iCurrTotalMaterialMeshIndex);
             }
-            if(aaiFaceUVIndices.size() <= iCurrTotalMaterialMeshIndex)
+            while(aaiFaceUVIndices.size() <= iCurrTotalMaterialMeshIndex)
             {
                 aaiFaceUVIndices.resize(aaiFaceUVIndices.size() + 1);
                 assert(aaiFaceUVIndices.size() > iCurrTotalMaterialMeshIndex);
@@ -461,7 +562,7 @@ void loadOBJ(
         {
             aaPositions.resize(aaPositions.size() + 1);
             aMeshNames.push_back(aTokens[1]);
-            iCurrMeshIndex = aMeshNames.size() - 1;
+            iCurrMeshIndex = (uint32_t)aMeshNames.size() - 1;
 
             DEBUG_PRINTF("%d %s %s\n", 
                 iCurrMeshIndex, 
@@ -492,6 +593,8 @@ void loadOBJ(
                 aMaterials.push_back(material);
             }
 
+            aiMeshMaterialID.push_back(materialIter->miID);
+
             // new mesh material name
             std::string meshMaterialName = aMeshNames[aMeshNames.size() - 1] + "-" + aTokens[1];
             auto iter = std::find(aTotalMeshNames.begin(), aTotalMeshNames.end(), meshMaterialName);
@@ -513,15 +616,15 @@ void loadOBJ(
             }
 
             aTotalMeshNames.push_back(meshMaterialName);
-            iCurrTotalMaterialMeshIndex = aTotalMeshNames.size() - 1;
+            iCurrTotalMaterialMeshIndex = (uint32_t)aTotalMeshNames.size() - 1;
 
             DEBUG_PRINTF("\t%d %s %s\n", 
                 iCurrTotalMaterialMeshIndex,
                 aTokens[0].c_str(), 
                 aTokens[1].c_str());
             DEBUG_PRINTF("\t\t# names: %d, # material names: %d %s\n",
-                aMeshNames.size(),
-                aTotalMeshNames.size(),
+                (int32_t)aMeshNames.size(),
+                (int32_t)aTotalMeshNames.size(),
                 meshMaterialName.c_str());
 
         }   // token == "usemtl"
@@ -633,13 +736,13 @@ void makeVertices(
 
                 // check for existing key in map
                 Vertex vertex;
-                vertex.mPosition = vec4(pos, 1.0f);
+                vertex.mPosition = vec4(pos, (float)iMesh);
                 vertex.mNormal = vec4(normal, 1.0f);
-                vertex.mUV = uv;
+                vertex.mUV = vec4(uv.x, uv.y, 0.0f, 0.0f);
                 char szKey[128];
                 memset(szKey, 0, sizeof(char) * 128);
-                sprintf(szKey, "%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f",
-                    pos.x, pos.y, pos.z,
+                sprintf(szKey, "%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f",
+                    pos.x, pos.y, pos.z, vertex.mPosition.w,
                     normal.x, normal.y, normal.z,
                     uv.x, uv.y);
                 std::string key = szKey;
@@ -665,7 +768,6 @@ void makeVertices(
                     iVertexIndex = vertexMapIter->second.miTotalIndex;
                 }
                 
-                //aaFaceVertexKeys[iMesh].push_back(key);
                 aaiTriangleVertexIndices[iMesh].push_back(iVertexIndex);
 
             }   // for i = 0 to 3
@@ -673,8 +775,8 @@ void makeVertices(
         }   // for position index = 0 to num positions
 
         MeshExtent extent;
-        extent.mMinPosition = minPosition;
-        extent.mMaxPosition = maxPosition;
+        extent.mMinPosition = vec4(minPosition, 1.0f);
+        extent.mMaxPosition = vec4(maxPosition, 1.0f);
         aExtents.push_back(extent);
 
     }   // for mesh = 0 to num meshes
@@ -705,16 +807,16 @@ void outputVerticesAndTriangles(
         range.miEnd = iCurrStart;
         aMeshTriangleRanges[i] = range;
     }
-    uint32_t iTriangleRangeSize = aMeshTriangleRanges.size() * sizeof(MeshRange);
+    uint32_t iTriangleRangeSize = (uint32_t)aMeshTriangleRanges.size() * sizeof(MeshRange);
 
-    uint32_t iNumTotalVertices = aTotalVertices.size();
+    uint32_t iNumTotalVertices = (uint32_t)aTotalVertices.size();
     uint32_t iVertexSize = (uint32_t)sizeof(Vertex);
 
     uint32_t iNumTotalTriangles = 0;
     for(auto const& aiTriangleVertexIndices : aaiTriangleVertexIndices)
     {
         assert(aiTriangleVertexIndices.size() % 3 == 0);
-        uint32_t iNumTriangles = aiTriangleVertexIndices.size() / 3;
+        uint32_t iNumTriangles = (uint32_t)aiTriangleVertexIndices.size() / 3;
         iNumTotalTriangles += iNumTriangles;
     }
 
@@ -736,13 +838,6 @@ void outputVerticesAndTriangles(
     assert(aaiTriangleVertexIndices.size() == iNumMeshes);
     fwrite(aTotalVertices.data(), sizeof(Vertex), aTotalVertices.size(), fp);
 
-    //std::vector<uint32_t> aiTotalTriangleVertexIndices;
-    //for(uint32_t i = 0; i < aaiTriangleVertexIndices.size(); i++)
-    //{
-    //    aiTotalTriangleVertexIndices.insert(aiTotalTriangleVertexIndices.end(), aaiTriangleVertexIndices[i].begin(), aaiTriangleVertexIndices[i].end());
-    //}
-    //fwrite(aiTotalTriangleVertexIndices.data(), sizeof(uint32_t), aiTotalTriangleVertexIndices.size(), fp);
-
     for(uint32_t i = 0; i < aaiTriangleVertexIndices.size(); i++)
     {
         fwrite(aaiTriangleVertexIndices[i].data(), sizeof(uint32_t), aaiTriangleVertexIndices[i].size(), fp);
@@ -750,7 +845,7 @@ void outputVerticesAndTriangles(
 
     fclose(fp);
 
-    DEBUG_PRINTF("wrote to %s\n", fullPath.c_str());
+    DEBUG_PRINTF("wrote to %s num meshes: %d\n", fullPath.c_str(), (int32_t)aaiTriangleVertexIndices.size());
 }
 
 /*
@@ -770,7 +865,16 @@ void test(
     uint32_t iTriangleStartOffset = 0;
 
     FILE* fp = fopen(fullPath.c_str(), "rb");
-    
+    auto directoryEnd = fullPath.find_last_of("//");
+    if(directoryEnd == std::string::npos)
+    {
+        directoryEnd = fullPath.find_last_of("\\");
+    }
+    std::string directory = fullPath.substr(0, directoryEnd);
+    std::string fileName = fullPath.substr(directoryEnd + 1);
+    auto baseNameEnd = fileName.find_last_of(".");
+    std::string baseName = fileName.substr(0, baseNameEnd);
+
     uint64_t iFileSize = (uint64_t)fseek(fp, 0, SEEK_END);
     fseek(fp, (long)iFileSize - 8, SEEK_SET);
     float fTest = 0.0f;
@@ -803,18 +907,27 @@ void test(
 
     fclose(fp);
 
+    DEBUG_PRINTF("output verifcation obj meshes: \"%s\"\n, num meshes: %d\n", fullPath.c_str(), iNumMeshes);
+
     std::vector<uint32_t> aiMeshes;
     for(uint32_t i = 0; i < iNumMeshes; i++)
     {
         aiMeshes.push_back(i);
     }
+
+    char szTestOutputDirectory[256];
+    sprintf(szTestOutputDirectory, "%s\\test-output", directory.c_str());
+    std::filesystem::create_directories(szTestOutputDirectory);
+
     std::stringstream oss;
-    oss << "d:\\Downloads\\Bistro_v4\\test-output\\test-bistro-part-read-from-file.obj";
+    oss << directory << "\\test-output\\test-" << baseName << "-part-read-from-file.obj";
     saveOBJ(
         oss.str().c_str(),
         aTotalVertices,
         aaiTriangleVertexIndices,
         aiMeshes);
+
+    DEBUG_PRINTF("save debug parts to %s\n", oss.str().c_str());
 }
 
 /*
@@ -856,7 +969,7 @@ void saveOBJ(
         fprintf(fp, "o object\n");
         std::vector<uint32_t> const& aiTriangleVertexIndices = aaiTriangleVertexIndices[iMesh];
         assert(aiTriangleVertexIndices.size() % 3 == 0);
-        uint32_t iNumTriangles = aiTriangleVertexIndices.size() / 3;
+        uint32_t iNumTriangles = (uint32_t)aiTriangleVertexIndices.size() / 3;
         for(uint32_t iTriangle = 0; iTriangle < iNumTriangles; iTriangle++)
         {
             fprintf(fp, "f %d/%d/%d %d/%d/%d %d/%d/%d\n",
@@ -873,4 +986,265 @@ void saveOBJ(
     }
 
     fclose(fp);
+}
+
+/*
+**
+*/
+void readMaterialFile(
+    std::vector<OBJMaterialInfo>& aMaterials,
+    std::string const& fullPath,
+    std::string const& directory,
+    std::string const& baseName)
+{
+    FILE* fp = fopen(fullPath.c_str(), "rb");
+    fseek(fp, 0, SEEK_END);
+    uint64_t iFileSize = (uint64_t)ftell(fp);
+    fseek(fp, 0, SEEK_SET);
+    std::vector<char> acFileContent((size_t)iFileSize + 1);
+    acFileContent[(size_t)iFileSize] = 0;
+    fread(acFileContent.data(), sizeof(char), (size_t)iFileSize, fp);
+    fclose(fp);
+
+    std::map<std::string, uint32_t> aTotalAlbedoTextureMap;
+    std::map<std::string, uint32_t> aTotalNormalTextureMap;
+    std::map<std::string, uint32_t> aTotalSpecularTextureMap;
+    std::map<std::string, uint32_t> aTotalEmissiveTextureMap;
+
+    int64_t iCurrPosition = 0;
+    std::string fileContent = acFileContent.data();
+    OBJMaterialInfo* pMaterial = nullptr;
+    while(true)
+    {
+        int64_t iEnd = fileContent.find('\n', (uint32_t)iCurrPosition);
+        if(iEnd < 0 || iEnd > (int64_t)fileContent.size() || iCurrPosition >= (int64_t)fileContent.size())
+        {
+            break;
+        }
+
+        std::string line = fileContent.substr((uint32_t)iCurrPosition, (uint32_t)(iEnd - iCurrPosition));
+        iCurrPosition = iEnd + 1;
+
+        std::vector<std::string> aTokens = split(line.c_str(), ' ');
+        if(aTokens[0] == "newmtl")
+        {
+            aMaterials.resize(aMaterials.size() + 1);
+            pMaterial = &aMaterials[aMaterials.size() - 1];
+            pMaterial->miID = (uint32_t)aMaterials.size();
+            pMaterial->mName = aTokens[1];
+        }
+        else if(aTokens[0] == "Kd")
+        {
+            pMaterial->mDiffuse = float4(
+                (float)atof(aTokens[1].c_str()),
+                (float)atof(aTokens[2].c_str()),
+                (float)atof(aTokens[3].c_str()),
+                1.0f);
+        }
+        else if(aTokens[0] == "Ks")
+        {
+            pMaterial->mSpecular = float4(
+                (float)atof(aTokens[1].c_str()),
+                (float)atof(aTokens[2].c_str()),
+                (float)atof(aTokens[3].c_str()),
+                1.0f);
+        }
+        else if(aTokens[0] == "Ke")
+        {
+            pMaterial->mEmissive = float4(
+                (float)atof(aTokens[1].c_str()),
+                (float)atof(aTokens[2].c_str()),
+                (float)atof(aTokens[3].c_str()),
+                1.0f);
+        }
+        else if(aTokens[0] == "map_Bump")
+        {
+            pMaterial->mNormalTexturePath = aTokens[aTokens.size() - 1];
+            aTotalNormalTextureMap[std::string(aTokens[aTokens.size() - 1])] = 1;
+        }
+        else if(aTokens[0] == "map_Kd")
+        {
+            pMaterial->mAlbedoTexturePath = aTokens[aTokens.size() - 1];
+            aTotalAlbedoTextureMap[std::string(aTokens[aTokens.size() - 1])] = 1;
+        }
+        else if(aTokens[0] == "map_Ks")
+        {
+            pMaterial->mSpecularTexturePath = aTokens[aTokens.size() - 1];
+            aTotalSpecularTextureMap[std::string(aTokens[aTokens.size() - 1])] = 1;
+        }
+        else if(aTokens[0] == "map_Ke")
+        {
+            pMaterial->mEmissiveTexturePath = aTokens[aTokens.size() - 1];
+            aTotalEmissiveTextureMap[std::string(aTokens[aTokens.size() - 1])] = 1;
+
+        }
+    }
+
+    std::vector<OutputMaterialInfo> aOutputMaterials;
+    aOutputMaterials.resize(aMaterials.size());
+    for(uint32_t i = 0; i < aMaterials.size(); i++)
+    {
+        aOutputMaterials[i].miID = i + 1;
+        aOutputMaterials[i].mDiffuse = aMaterials[i].mDiffuse;
+        aOutputMaterials[i].mEmissive = aMaterials[i].mEmissive;
+        aOutputMaterials[i].mSpecular = aMaterials[i].mSpecular;
+
+        auto albedoIter = aTotalAlbedoTextureMap.find(aMaterials[i].mAlbedoTexturePath);
+        aOutputMaterials[i].miAlbedoTextureID = (uint32_t)std::distance(aTotalAlbedoTextureMap.begin(), albedoIter);
+
+        //auto emissiveIter = aTotalEmissiveTextureMap.find(aMaterials[i].mEmissiveTexturePath);
+        //aOutputMaterials[i].miEmissiveTextureID = std::distance(aTotalEmissiveTextureMap.begin(), emissiveIter);
+
+        auto normalIter = aTotalNormalTextureMap.find(aMaterials[i].mNormalTexturePath);
+        aOutputMaterials[i].miNormalTextureID = (uint32_t)std::distance(aTotalNormalTextureMap.begin(), normalIter);
+
+        auto specularIter = aTotalSpecularTextureMap.find(aMaterials[i].mSpecularTexturePath);
+        aOutputMaterials[i].miSpecularTextureID = (uint32_t)std::distance(aTotalSpecularTextureMap.begin(), specularIter);
+    }
+
+    for(auto const& keyValue : aTotalSpecularTextureMap)
+    {
+        auto start = keyValue.first.find_last_of("\\");
+        if(start == std::string::npos)
+        {
+            start = keyValue.first.find_last_of("/");
+        }
+        start += 1;
+        auto end = keyValue.first.find_last_of(".");
+        auto textureBaseName = keyValue.first.substr(start, end - start);
+        std::string fullPath = "d:\\Downloads\\Bistro_v4\\converted-textures\\" + textureBaseName + ".png";
+        int32_t iWidth = 0, iHeight = 0, iComp = 0;
+        stbi_uc* pacImageData = stbi_load(fullPath.c_str(), &iWidth, &iHeight, &iComp, 4);
+        float fRed = (float)(*pacImageData) / 255.0f;
+        float fRoughness = (float)(*(pacImageData + 1)) / 255.0f;
+        float fMetalness = (float)(*(pacImageData + 2)) / 255.0f;
+        stbi_image_free(pacImageData);
+        
+        auto specularIter = aTotalSpecularTextureMap.find(keyValue.first);
+        uint32_t iIndex = (uint32_t)std::distance(aTotalSpecularTextureMap.begin(), specularIter);
+
+        for(uint32_t i = 0; i < aOutputMaterials.size(); i++)
+        {
+            if(aOutputMaterials[i].miSpecularTextureID == iIndex)
+            {
+                aOutputMaterials[i].mSpecular = float4(fRoughness, fMetalness, 0.0f, 0.0f);
+            }
+        }
+
+    }
+
+    OutputMaterialInfo endMaterial;
+    endMaterial.miID = 99999;
+    endMaterial.mDiffuse.x = FLT_MAX;
+    aOutputMaterials.push_back(endMaterial);
+
+    uint32_t iNumMaterials = (uint32_t)aOutputMaterials.size();
+    std::string outputFullPath = directory + "\\" + baseName + ".mat";
+    fp = fopen(outputFullPath.c_str(), "wb");
+    //fwrite(&iNumMaterials, sizeof(uint32_t), 1, fp);
+    fwrite(aOutputMaterials.data(), sizeof(OutputMaterialInfo), aOutputMaterials.size(), fp);
+
+    char cNewLine = '\n';
+    uint32_t iNumAlbedoTextures = (uint32_t)aTotalAlbedoTextureMap.size();
+    fwrite(&iNumAlbedoTextures, sizeof(uint32_t), 1, fp);
+    for(auto const& keyValue : aTotalAlbedoTextureMap)
+    {
+        fwrite(keyValue.first.c_str(), 1, keyValue.first.length(), fp);
+        fwrite(&cNewLine, sizeof(char), 1, fp);
+    }
+
+    uint32_t iNumNormalTextures = (uint32_t)aTotalNormalTextureMap.size();
+    fwrite(&iNumNormalTextures, sizeof(uint32_t), 1, fp);
+    for(auto const& keyValue : aTotalNormalTextureMap)
+    {
+        fwrite(keyValue.first.c_str(), 1, keyValue.first.length(), fp);
+        fwrite(&cNewLine, sizeof(char), 1, fp);
+    }
+
+    uint32_t iNumSpecularTextures = (uint32_t)aTotalSpecularTextureMap.size();
+    fwrite(&iNumSpecularTextures, sizeof(uint32_t), 1, fp);
+    for(auto const& keyValue : aTotalSpecularTextureMap)
+    {
+        fwrite(keyValue.first.c_str(), 1, keyValue.first.length(), fp);
+        fwrite(&cNewLine, sizeof(char), 1, fp);
+    }
+
+    uint32_t iNumEmissiveTextures = (uint32_t)aTotalEmissiveTextureMap.size();
+    fwrite(&iNumEmissiveTextures, sizeof(uint32_t), 1, fp);
+    for(auto const& keyValue : aTotalEmissiveTextureMap)
+    {
+        fwrite(keyValue.first.c_str(), 1, keyValue.first.length(), fp);
+        fwrite(&cNewLine, sizeof(char), 1, fp);
+    }
+
+    fclose(fp);
+
+    DEBUG_PRINTF("wrote to %s\n", outputFullPath.c_str());
+
+    // output texture selection from shader
+    char szOutputShaderDirectory[256];
+    sprintf(szOutputShaderDirectory, "%s\\shaders\\", directory.c_str());
+    std::filesystem::create_directories(szOutputShaderDirectory);
+    char szOutputShaderFilePath[256];
+    sprintf(szOutputShaderFilePath, "%s\\%s-albedo.shader", szOutputShaderDirectory, baseName.c_str());
+    fp = fopen(szOutputShaderFilePath, "w");
+    uint32_t iLastGroup = 0;
+    for(uint32_t iPart = 0;; iPart++)
+    {
+        uint32_t iStartTextureIndex = iPart * 100;
+        if(iStartTextureIndex >= iNumAlbedoTextures)
+        {
+            break;
+        }
+        uint32_t iEndTextureIndex = iStartTextureIndex + 100;
+        if(iEndTextureIndex > iNumAlbedoTextures)
+        {
+            iEndTextureIndex = iNumAlbedoTextures;
+        }
+
+        uint32_t iGroup = iPart + 2;
+        for(uint32_t i = iStartTextureIndex; i < iEndTextureIndex; i++)
+        {
+            fprintf(fp, "@group(%d) @binding(%d)\nvar texture%d: texture_2d<f32>;\n", iGroup, i, i);
+        }
+        fprintf(fp, "\n\n//////\nfn sampleTexture%d(\n    iTextureID: u32,\n    uv: vec2<f32>) -> vec4<f32>\n{\n", iPart);
+        for(uint32_t i = iStartTextureIndex; i < iEndTextureIndex; i++)
+        {
+            fprintf(fp, "    if(iTextureID == %du)\n    {\n    ret = textureSample(texture%d, linearTextureSampler, uv);\n    }\n", i, i);
+        }
+        fprintf(fp, "}\n\n");
+
+        iLastGroup = iGroup;
+    }
+    fclose(fp);
+
+    sprintf(szOutputShaderFilePath, "%s\\%s-normal.shader", szOutputShaderDirectory, baseName.c_str());
+    fp = fopen(szOutputShaderFilePath, "w");
+    for(uint32_t iPart = 0;; iPart++)
+    {
+        uint32_t iStartTextureIndex = iPart * 100;
+        if(iStartTextureIndex >= iNumNormalTextures)
+        {
+            break;
+        }
+        uint32_t iEndTextureIndex = iStartTextureIndex + 100;
+        if(iEndTextureIndex > iNumNormalTextures)
+        {
+            iEndTextureIndex = iNumNormalTextures;
+        }
+
+        uint32_t iGroup = iPart + iLastGroup;
+        for(uint32_t i = iStartTextureIndex; i < iEndTextureIndex; i++)
+        {
+            fprintf(fp, "@group(%d) @binding(%d)\nvar normalTexture%d: texture_2d<f32>;\n", iGroup, i, i);
+        }
+        fprintf(fp, "\n\n//////\nfn sampleNormalTexture%d(\n    iTextureID: u32,\n    uv: vec2<f32>) -> vec4<f32>\n{\n", iPart);
+        for(uint32_t i = iStartTextureIndex; i < iEndTextureIndex; i++)
+        {
+            fprintf(fp, "    if(iTextureID == %du)\n    {\n    ret = textureSample(normalTexture%d, linearTextureSampler, uv);\n    }\n", i, i);
+        }
+        fprintf(fp, "}\n\n");
+    }
+    fclose(fp);
+
 }
